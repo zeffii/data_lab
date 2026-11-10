@@ -4,142 +4,187 @@ import json
 import io
 import traceback
 import sys
+import textwrap
 from datetime import datetime
 from pathlib import Path
 import difflib
 
-# Syntax highlighting
 try:
     import flet_code_editor as fce
     HAS_CODE_EDITOR = True
 except ImportError:
     HAS_CODE_EDITOR = False
-    print("Tip: install syntax highlighting with →  pip install flet-code-editor")
+    print("Tip: pip install flet-code-editor")
 
 class DataWorkbench:
     def __init__(self, page: ft.Page):
         self.page = page
         self.page.title = "CSV / JSON Data Workbench + Python Interpreter"
         self.page.theme_mode = ft.ThemeMode.DARK
-        self.page.padding = 15
+        self.page.padding = 12
 
-        self.original_df: pd.DataFrame | None = None
-        self.df: pd.DataFrame | None = None
-        self.current_file: str | None = None
+        self.original_df = None
+        self.df = None
+        self.current_file = None
         self.code_font_size = 14
+        self.tabs = []
+        self.active_tab_index = 0
 
-        # FilePicker is a Service
+        # FilePicker
         self.file_picker = ft.FilePicker()
         self.page.services.append(self.file_picker)
 
-        # Status bar
         self.status = ft.Text("No file loaded", color=ft.Colors.GREY_400, size=13)
-
-        # Data table area
         self.table_container = ft.Column(expand=True, scroll=ft.ScrollMode.AUTO)
 
-        # Output / Diff console
         self.output = ft.TextField(
-            label="Output / Diff",
             multiline=True,
-            min_lines=12,
-            max_lines=20,
+            min_lines=7,
+            max_lines=10,
             read_only=True,
             text_style=ft.TextStyle(font_family="Consolas", size=13),
             expand=True,
         )
 
-        # Font size label
         self.code_font_label = ft.Text(f"Font: {self.code_font_size}", size=12)
 
-        # Code editor
+        self.build_ui()
+        self.add_new_tab("Date Parser", self.get_template_code())
+
+    def get_template_code(self) -> str:
+        return textwrap.dedent('''
+            # Correct date parser for your sample file
+            def parse_date(row):
+                # We must import inside the function because names injected
+                # into exec() are not visible inside nested functions.
+                from datetime import datetime as dt
+
+                date_str = str(row["Date_Added"]).strip()
+                source = str(row["Source"]).strip().lower()
+
+                if "us mac" in source:
+                    formats = ["%m/%d/%Y", "%m-%d-%Y", "%m/%d/%y"]
+                elif "nl laptop" in source:
+                    formats = ["%d-%m-%Y", "%d/%m/%Y", "%d-%m-%y"]
+                else:  # Server
+                    formats = ["%Y-%m-%d", "%Y/%m/%d"]
+
+                for fmt in formats:
+                    try:
+                        return dt.strptime(date_str, fmt).date()
+                    except ValueError:
+                        continue
+                return None
+
+            df["Date_Parsed"] = df.apply(parse_date, axis=1)
+
+            print("Parsing complete!")
+            print(df[["Filename", "Date_Added", "Source", "Date_Parsed"]].head(12).to_string())
+            print("\\nSuccess:", df["Date_Parsed"].notna().sum(), "/", len(df))
+        ''').strip()
+
+    def change_font_size(self, delta: int):
+        self.code_font_size = max(10, min(28, self.code_font_size + delta))
+        self.code_font_label.value = f"Font: {self.code_font_size}"
+        for tab in self.tabs:
+            tab["editor"].text_style = ft.TextStyle(font_family="Consolas", size=self.code_font_size)
+        self.page.update()
+
+    def create_editor(self, content: str):
         if HAS_CODE_EDITOR:
-            self.code_editor = fce.CodeEditor(
-                value=self.get_template_code(),
+            return fce.CodeEditor(
+                value=content,
                 language=fce.CodeLanguage.PYTHON,
                 code_theme=fce.CodeTheme.ATOM_ONE_DARK,
                 expand=True,
                 text_style=ft.TextStyle(font_family="Consolas", size=self.code_font_size),
             )
         else:
-            self.code_editor = ft.TextField(
-                value=self.get_template_code(),
+            return ft.TextField(
+                value=content,
                 multiline=True,
-                min_lines=12,
-                max_lines=18,
+                min_lines=10,
+                max_lines=15,
                 text_style=ft.TextStyle(font_family="Consolas", size=self.code_font_size),
                 expand=True,
             )
 
-        self.build_ui()
+    def add_new_tab(self, name: str = None, content: str = "# New script\\n"):
+        if name is None:
+            name = f"Script {len(self.tabs) + 1}"
+        editor = self.create_editor(content)
+        self.tabs.append({"name": name, "editor": editor})
+        self.active_tab_index = len(self.tabs) - 1
+        self.refresh_tabs_ui()
 
-    def get_template_code(self) -> str:
-        return '''# df is already loaded as a pandas DataFrame
-# Available: pd, datetime, Path, etc.
+    def close_tab(self, index: int):
+        if len(self.tabs) <= 1:
+            return
+        self.tabs.pop(index)
+        if self.active_tab_index >= len(self.tabs):
+            self.active_tab_index = len(self.tabs) - 1
+        self.refresh_tabs_ui()
 
-def parse_date(row):
-    """Parse Date_Added according to the Source locale."""
-    date_str = str(row["Date_Added"]).strip().replace(" ", "")
-    source = str(row["Source"]).lower()
+    def switch_tab(self, index: int):
+        self.active_tab_index = index
+        self.refresh_tabs_ui()
 
-    try:
-        if "us mac" in source:
-            for fmt in ("%m/%d/%Y", "%m-%d-%Y", "%m/%d/%y"):
-                try:
-                    return datetime.strptime(date_str, fmt).date()
-                except ValueError:
-                    continue
-        elif "nl laptop" in source:
-            for fmt in ("%d-%m-%Y", "%d/%m/%Y", "%d-%m-%y", "%d/%m/%y"):
-                try:
-                    return datetime.strptime(date_str, fmt).date()
-                except ValueError:
-                    continue
-        else:  # Server / ISO
-            for fmt in ("%Y-%m-%d", "%d-%m-%Y", "%m/%d/%Y", "%Y/%m/%d"):
-                try:
-                    return datetime.strptime(date_str, fmt).date()
-                except ValueError:
-                    continue
-    except Exception:
-        pass
-    return None
+    def refresh_tabs_ui(self):
+        tab_buttons = []
+        for i, tab in enumerate(self.tabs):
+            is_active = (i == self.active_tab_index)
+            tab_buttons.append(
+                ft.Container(
+                    content=ft.Row(
+                        [
+                            ft.Text(tab["name"], size=13,
+                                    weight=ft.FontWeight.BOLD if is_active else None),
+                            ft.IconButton(
+                                icon=ft.Icons.CLOSE,
+                                icon_size=14,
+                                on_click=lambda e, idx=i: self.close_tab(idx),
+                                tooltip="Close tab",
+                            ) if len(self.tabs) > 1 else ft.Container(width=0),
+                        ],
+                        spacing=4,
+                        tight=True,
+                    ),
+                    padding=ft.Padding.symmetric(horizontal=10, vertical=6),
+                    bgcolor=ft.Colors.SURFACE_CONTAINER_HIGHEST if is_active else None,
+                    border_radius=6,
+                    on_click=lambda e, idx=i: self.switch_tab(idx),
+                )
+            )
 
-df["Date_Parsed"] = df.apply(parse_date, axis=1)
+        tab_buttons.append(
+            ft.IconButton(
+                icon=ft.Icons.ADD,
+                tooltip="New tab",
+                on_click=lambda e: self.add_new_tab(),
+            )
+        )
 
-print("Date parsing done. New column 'Date_Parsed' added.")
-print(df[["Filename", "Date_Added", "Source", "Date_Parsed"]].head(10))
-'''
-
-    def change_font_size(self, delta: int):
-        self.code_font_size = max(10, min(28, self.code_font_size + delta))
-        self.code_font_label.value = f"Font: {self.code_font_size}"
-
-        new_style = ft.TextStyle(font_family="Consolas", size=self.code_font_size)
-        if HAS_CODE_EDITOR:
-            self.code_editor.text_style = new_style
-        else:
-            self.code_editor.text_style = new_style
+        self.tabs_row.controls = tab_buttons
+        self.editor_container.content = self.tabs[self.active_tab_index]["editor"]
         self.page.update()
 
     def build_ui(self):
-        # Toolbar
+        # Top toolbar
         toolbar = ft.Row(
             [
                 ft.Button("Load CSV / JSON", icon=ft.Icons.FOLDER_OPEN, on_click=self.pick_file),
-                ft.Button("Run Code", icon=ft.Icons.PLAY_ARROW, bgcolor=ft.Colors.GREEN_700, on_click=self.run_code),
                 ft.Button("Show Diff", icon=ft.Icons.COMPARE, on_click=self.show_diff),
                 ft.Button("Save Copy", icon=ft.Icons.SAVE, on_click=self.save_copy),
                 ft.Button("Reset", icon=ft.Icons.RESTORE, on_click=self.reset_df),
                 ft.VerticalDivider(),
-                ft.IconButton(ft.Icons.TEXT_DECREASE, tooltip="Smaller font", on_click=lambda e: self.change_font_size(-1)),
+                ft.IconButton(ft.Icons.TEXT_DECREASE, on_click=lambda e: self.change_font_size(-1)),
                 self.code_font_label,
-                ft.IconButton(ft.Icons.TEXT_INCREASE, tooltip="Larger font", on_click=lambda e: self.change_font_size(+1)),
+                ft.IconButton(ft.Icons.TEXT_INCREASE, on_click=lambda e: self.change_font_size(+1)),
             ],
             spacing=8,
         )
 
-        # Left side – full height Data Table
+        # Left panel – full height table
         left_panel = ft.Container(
             content=ft.Column(
                 [
@@ -154,15 +199,38 @@ print(df[["Filename", "Date_Added", "Source", "Date_Parsed"]].head(10))
             padding=10,
         )
 
-        # Right side – Output + Python Interpreter stacked
+        # Right panel
+        self.tabs_row = ft.Row(scroll=ft.ScrollMode.AUTO) #, expand=True)
+        self.editor_container = ft.Container(expand=True)
+
+        run_button = ft.Button(
+            "Run Code",
+            icon=ft.Icons.PLAY_ARROW,
+            bgcolor=ft.Colors.GREEN_700,
+            on_click=self.run_current_code,
+        )
+
         right_panel = ft.Container(
             content=ft.Column(
                 [
                     ft.Text("Output / Diff", weight=ft.FontWeight.BOLD),
-                    self.output,                          # output text area
-                    ft.Divider(height=10),
-                    ft.Text("Python Interpreter", weight=ft.FontWeight.BOLD),
-                    self.code_editor,                     # code editor under the output
+                    self.output,
+                    ft.Divider(height=8),
+                    
+                    # Header row with title + Run button
+                    ft.Row(
+                        [
+                            ft.Text("Python Interpreter", weight=ft.FontWeight.BOLD),
+                            run_button,
+                        ],
+                        alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                    ),
+                    
+                    # Tabs – compact height
+                    self.tabs_row,
+                    
+                    # Code editor takes the remaining space
+                    self.editor_container,
                 ],
                 expand=True,
                 spacing=6,
@@ -173,12 +241,8 @@ print(df[["Filename", "Date_Added", "Source", "Date_Parsed"]].head(10))
             padding=10,
         )
 
-        # Main content row (table full height)
         main_content = ft.Row(
-            [
-                left_panel,
-                right_panel,
-            ],
+            [left_panel, right_panel],
             expand=True,
             spacing=12,
             vertical_alignment=ft.CrossAxisAlignment.STRETCH,
@@ -187,15 +251,14 @@ print(df[["Filename", "Date_Added", "Source", "Date_Parsed"]].head(10))
         self.page.add(
             toolbar,
             self.status,
-            ft.Divider(height=8),
-            main_content,          # this now takes all remaining height
+            ft.Divider(height=6),
+            main_content,
         )
 
     async def pick_file(self, e):
         files = await self.file_picker.pick_files(
-            dialog_title="Select CSV or JSON file",
             allowed_extensions=["csv", "json", "txt"],
-            allow_multiple=False,
+            dialog_title="Select CSV or JSON file",
         )
         if not files:
             return
@@ -217,22 +280,20 @@ print(df[["Filename", "Date_Added", "Source", "Date_Parsed"]].head(10))
             self.original_df = self.df.copy(deep=True)
             self.status.value = f"Loaded: {Path(path).name}  →  {len(self.df)} rows × {len(self.df.columns)} columns"
             self.refresh_table()
-            self.output.value = "File loaded successfully. You can now run Python code on `df`."
+            self.output.value = "File loaded successfully."
         except Exception:
-            self.output.value = f"Error loading file:\n{traceback.format_exc()}"
+            self.output.value = traceback.format_exc()
         self.page.update()
 
     def refresh_table(self):
         if self.df is None:
             return
-
         preview = self.df.head(100)
-        columns = [ft.DataColumn(ft.Text(col, weight=ft.FontWeight.BOLD)) for col in preview.columns]
-        rows = []
-        for _, row in preview.iterrows():
-            cells = [ft.DataCell(ft.Text(str(v)[:50])) for v in row]
-            rows.append(ft.DataRow(cells=cells))
-
+        columns = [ft.DataColumn(ft.Text(c, weight=ft.FontWeight.BOLD)) for c in preview.columns]
+        rows = [
+            ft.DataRow(cells=[ft.DataCell(ft.Text(str(v)[:50])) for v in row])
+            for _, row in preview.iterrows()
+        ]
         table = ft.DataTable(
             columns=columns,
             rows=rows,
@@ -244,13 +305,13 @@ print(df[["Filename", "Date_Added", "Source", "Date_Parsed"]].head(10))
         self.table_container.controls = [table]
         self.page.update()
 
-    def run_code(self, e):
+    def run_current_code(self, e):
         if self.df is None:
             self.output.value = "Load a file first."
             self.page.update()
             return
 
-        code = self.code_editor.value
+        code = self.tabs[self.active_tab_index]["editor"].value
 
         old_stdout = io.StringIO()
         sys_stdout = sys.stdout
@@ -259,7 +320,7 @@ print(df[["Filename", "Date_Added", "Source", "Date_Parsed"]].head(10))
         local_ns = {
             "df": self.df,
             "pd": pd,
-            "datetime": datetime,
+            "datetime": datetime,       # important
             "Path": Path,
             "original_df": self.original_df,
         }
@@ -269,8 +330,7 @@ print(df[["Filename", "Date_Added", "Source", "Date_Parsed"]].head(10))
             if "df" in local_ns:
                 self.df = local_ns["df"]
             self.refresh_table()
-            printed = old_stdout.getvalue()
-            self.output.value = printed + "\n\n--- Code finished successfully ---"
+            self.output.value = old_stdout.getvalue() + "\n\n--- Finished successfully ---"
         except Exception:
             self.output.value = old_stdout.getvalue() + "\n\n" + traceback.format_exc()
         finally:
@@ -280,17 +340,11 @@ print(df[["Filename", "Date_Added", "Source", "Date_Parsed"]].head(10))
     def show_diff(self, e):
         if self.df is None or self.original_df is None:
             return
-        try:
-            orig = self.original_df.to_csv(index=False)
-            curr = self.df.to_csv(index=False)
-            diff = difflib.unified_diff(
-                orig.splitlines(), curr.splitlines(),
-                fromfile="original", tofile="current", lineterm=""
-            )
-            diff_text = "\n".join(diff)
-            self.output.value = diff_text if diff_text.strip() else "No differences found."
-        except Exception as ex:
-            self.output.value = f"Diff error: {ex}"
+        orig = self.original_df.to_csv(index=False)
+        curr = self.df.to_csv(index=False)
+        diff = difflib.unified_diff(orig.splitlines(), curr.splitlines(),
+                                    fromfile="original", tofile="current", lineterm="")
+        self.output.value = "\n".join(diff) or "No differences."
         self.page.update()
 
     def save_copy(self, e):
