@@ -3,10 +3,10 @@ import pandas as pd
 import json
 import io
 import traceback
+import sys
 from datetime import datetime
 from pathlib import Path
 import difflib
-from copy import deepcopy
 
 class DataWorkbench:
     def __init__(self, page: ft.Page):
@@ -19,9 +19,14 @@ class DataWorkbench:
         self.df: pd.DataFrame | None = None
         self.current_file: str | None = None
 
-        # UI controls
+        # FilePicker is now a Service (do NOT add to overlay)
+        self.file_picker = ft.FilePicker()
+        self.page.services.append(self.file_picker)
+
+        # UI elements
         self.status = ft.Text("No file loaded", color=ft.Colors.GREY_400)
         self.table_container = ft.Column(expand=True, scroll=ft.ScrollMode.AUTO)
+
         self.code_field = ft.TextField(
             label="Python code (df is the current DataFrame)",
             multiline=True,
@@ -31,6 +36,7 @@ class DataWorkbench:
             text_style=ft.TextStyle(font_family="Consolas"),
             expand=True,
         )
+
         self.output = ft.TextField(
             label="Output / Diff",
             multiline=True,
@@ -41,9 +47,6 @@ class DataWorkbench:
             expand=True,
         )
 
-        self.file_picker = ft.FilePicker(on_result=self.on_file_picked)
-        self.page.overlay.append(self.file_picker)
-
         self.build_ui()
 
     def get_template_code(self) -> str:
@@ -52,29 +55,23 @@ class DataWorkbench:
 
 def parse_date(row):
     """Parse Date_Added according to the Source locale."""
-    date_str = str(row["Date_Added"]).strip()
+    date_str = str(row["Date_Added"]).strip().replace(" ", "")
     source = str(row["Source"]).lower()
-
-    # Clean common noise
-    date_str = date_str.replace(" ", "")
 
     try:
         if "us mac" in source:
-            # US: MM/DD/YYYY or MM-DD-YYYY
             for fmt in ("%m/%d/%Y", "%m-%d-%Y", "%m/%d/%y"):
                 try:
                     return datetime.strptime(date_str, fmt).date()
                 except ValueError:
                     continue
         elif "nl laptop" in source:
-            # NL/European: DD-MM-YYYY or DD/MM/YYYY
             for fmt in ("%d-%m-%Y", "%d/%m/%Y", "%d-%m-%y", "%d/%m/%y"):
                 try:
                     return datetime.strptime(date_str, fmt).date()
                 except ValueError:
                     continue
-        else:
-            # Server / ISO first, then fallbacks
+        else:  # Server / ISO
             for fmt in ("%Y-%m-%d", "%d-%m-%Y", "%m/%d/%Y", "%Y/%m/%d"):
                 try:
                     return datetime.strptime(date_str, fmt).date()
@@ -82,15 +79,9 @@ def parse_date(row):
                     continue
     except Exception:
         pass
-    return None   # or pd.NaT
+    return None
 
-# Apply the parser
 df["Date_Parsed"] = df.apply(parse_date, axis=1)
-
-# Optional extras you can uncomment / modify:
-# df["Category"] = df["Category"].str.strip().str.title()
-# df["BPM"] = df["BPM"].astype(str).str.replace(r"[^0-9]", "", regex=True).replace("", pd.NA).astype("Int64")
-# df["Length_s"] = df["Length_s"].astype(str).str.replace(",", ".").astype(float)
 
 print("Date parsing done. New column 'Date_Parsed' added.")
 print(df[["Filename", "Date_Added", "Source", "Date_Parsed"]].head(10))
@@ -98,19 +89,36 @@ print(df[["Filename", "Date_Added", "Source", "Date_Parsed"]].head(10))
 
     def build_ui(self):
         self.page.add(
-            ft.Row([
-                ft.ElevatedButton("Load CSV / JSON", icon=ft.Icons.FOLDER_OPEN,
-                                  on_click=lambda _: self.file_picker.pick_files(
-                                      allowed_extensions=["csv", "json", "txt"])),
-                ft.ElevatedButton("Run Code", icon=ft.Icons.PLAY_ARROW,
-                                  bgcolor=ft.Colors.GREEN_700, on_click=self.run_code),
-                ft.ElevatedButton("Show Diff", icon=ft.Icons.COMPARE,
-                                  on_click=self.show_diff),
-                ft.ElevatedButton("Save Copy", icon=ft.Icons.SAVE,
-                                  on_click=self.save_copy),
-                ft.ElevatedButton("Reset to Original", icon=ft.Icons.RESTORE,
-                                  on_click=self.reset_df),
-            ]),
+            ft.Row(
+                [
+                    ft.Button(
+                        "Load CSV / JSON",
+                        icon=ft.Icons.FOLDER_OPEN,
+                        on_click=self.pick_file,
+                    ),
+                    ft.Button(
+                        "Run Code",
+                        icon=ft.Icons.PLAY_ARROW,
+                        bgcolor=ft.Colors.GREEN_700,
+                        on_click=self.run_code,
+                    ),
+                    ft.Button(
+                        "Show Diff",
+                        icon=ft.Icons.COMPARE,
+                        on_click=self.show_diff,
+                    ),
+                    ft.Button(
+                        "Save Copy",
+                        icon=ft.Icons.SAVE,
+                        on_click=self.save_copy,
+                    ),
+                    ft.Button(
+                        "Reset to Original",
+                        icon=ft.Icons.RESTORE,
+                        on_click=self.reset_df,
+                    ),
+                ]
+            ),
             self.status,
             ft.Divider(),
             ft.Text("Data Preview", weight=ft.FontWeight.BOLD),
@@ -121,18 +129,25 @@ print(df[["Filename", "Date_Added", "Source", "Date_Parsed"]].head(10))
             self.output,
         )
 
-    def on_file_picked(self, e: ft.FilePickerResultEvent):
-        if not e.files:
+    async def pick_file(self, e):
+        files = await self.file_picker.pick_files(
+            dialog_title="Select CSV or JSON file",
+            allowed_extensions=["csv", "json", "txt"],
+            allow_multiple=False,
+        )
+        if not files:
             return
-        path = e.files[0].path
+
+        path = files[0].path
         self.current_file = path
+
         try:
             if path.lower().endswith(".json"):
                 with open(path, encoding="utf-8") as f:
                     data = json.load(f)
                 self.df = pd.json_normalize(data) if isinstance(data, list) else pd.DataFrame([data])
             else:
-                # Try semicolon first (your sample), then comma
+                # Your sample uses semicolon
                 try:
                     self.df = pd.read_csv(path, sep=";", dtype=str, keep_default_na=False)
                 except Exception:
@@ -142,19 +157,19 @@ print(df[["Filename", "Date_Added", "Source", "Date_Parsed"]].head(10))
             self.status.value = f"Loaded: {Path(path).name}  →  {len(self.df)} rows × {len(self.df.columns)} columns"
             self.refresh_table()
             self.output.value = "File loaded successfully. You can now run Python code on `df`."
-        except Exception as ex:
+        except Exception:
             self.output.value = f"Error loading file:\n{traceback.format_exc()}"
         self.page.update()
 
     def refresh_table(self):
         if self.df is None:
             return
-        # Limit preview for performance
+
         preview = self.df.head(100)
         columns = [ft.DataColumn(ft.Text(col, weight=ft.FontWeight.BOLD)) for col in preview.columns]
         rows = []
         for _, row in preview.iterrows():
-            cells = [ft.DataCell(ft.Text(str(v)[:40])) for v in row]
+            cells = [ft.DataCell(ft.Text(str(v)[:50])) for v in row]
             rows.append(ft.DataRow(cells=cells))
 
         table = ft.DataTable(
@@ -174,9 +189,7 @@ print(df[["Filename", "Date_Added", "Source", "Date_Parsed"]].head(10))
             self.page.update()
             return
 
-        # Capture stdout
         old_stdout = io.StringIO()
-        import sys
         sys_stdout = sys.stdout
         sys.stdout = old_stdout
 
@@ -190,7 +203,6 @@ print(df[["Filename", "Date_Added", "Source", "Date_Parsed"]].head(10))
 
         try:
             exec(self.code_field.value, {"__builtins__": __builtins__}, local_ns)
-            # If user reassigned df, pick it up
             if "df" in local_ns:
                 self.df = local_ns["df"]
             self.refresh_table()
@@ -206,7 +218,6 @@ print(df[["Filename", "Date_Added", "Source", "Date_Parsed"]].head(10))
         if self.df is None or self.original_df is None:
             return
         try:
-            # Simple textual diff on the CSV representation
             orig = self.original_df.to_csv(index=False)
             curr = self.df.to_csv(index=False)
             diff = difflib.unified_diff(
@@ -214,9 +225,7 @@ print(df[["Filename", "Date_Added", "Source", "Date_Parsed"]].head(10))
                 fromfile="original", tofile="current", lineterm=""
             )
             diff_text = "\n".join(diff)
-            if not diff_text.strip():
-                diff_text = "No differences found."
-            self.output.value = diff_text
+            self.output.value = diff_text if diff_text.strip() else "No differences found."
         except Exception as ex:
             self.output.value = f"Diff error: {ex}"
         self.page.update()
@@ -247,4 +256,4 @@ def main(page: ft.Page):
     DataWorkbench(page)
 
 if __name__ == "__main__":
-    ft.app(target=main)
+    ft.run(main)
