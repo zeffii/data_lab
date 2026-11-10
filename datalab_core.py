@@ -139,63 +139,56 @@ print(df[["Filename", "Date_Added", "Source", "Date_Parsed"]].head(10))
             spacing=8,
         )
 
-        # Data table (left) + Output (right)
-        data_and_output = ft.Row(
+        # Left side – full height Data Table
+        left_panel = ft.Container(
+            content=ft.Column(
+                [
+                    ft.Text("Data Preview", weight=ft.FontWeight.BOLD),
+                    self.table_container,
+                ],
+                expand=True,
+            ),
+            expand=3,
+            border=ft.Border.all(1, ft.Colors.OUTLINE),
+            border_radius=6,
+            padding=10,
+        )
+
+        # Right side – Output + Python Interpreter stacked
+        right_panel = ft.Container(
+            content=ft.Column(
+                [
+                    ft.Text("Output / Diff", weight=ft.FontWeight.BOLD),
+                    self.output,                          # output text area
+                    ft.Divider(height=10),
+                    ft.Text("Python Interpreter", weight=ft.FontWeight.BOLD),
+                    self.code_editor,                     # code editor under the output
+                ],
+                expand=True,
+                spacing=6,
+            ),
+            expand=2,
+            border=ft.Border.all(1, ft.Colors.OUTLINE),
+            border_radius=6,
+            padding=10,
+        )
+
+        # Main content row (table full height)
+        main_content = ft.Row(
             [
-                ft.Container(
-                    content=ft.Column(
-                        [
-                            ft.Text("Data Preview", weight=ft.FontWeight.BOLD),
-                            self.table_container,
-                        ],
-                        expand=True,
-                    ),
-                    expand=3,
-                    border=ft.Border.all(1, ft.Colors.OUTLINE),
-                    border_radius=6,
-                    padding=10,
-                ),
-                ft.Container(
-                    content=ft.Column(
-                        [
-                            ft.Text("Output / Diff", weight=ft.FontWeight.BOLD),
-                            self.output,
-                        ],
-                        expand=True,
-                    ),
-                    expand=2,
-                    border=ft.Border.all(1, ft.Colors.OUTLINE),
-                    border_radius=6,
-                    padding=10,
-                ),
+                left_panel,
+                right_panel,
             ],
             expand=True,
             spacing=12,
             vertical_alignment=ft.CrossAxisAlignment.STRETCH,
         )
 
-        # Code editor
-        code_section = ft.Container(
-            content=ft.Column(
-                [
-                    ft.Text("Python Interpreter", weight=ft.FontWeight.BOLD),
-                    self.code_editor,
-                ],
-                expand=True,
-            ),
-            height=300,
-            border=ft.Border.all(1, ft.Colors.OUTLINE),
-            border_radius=6,
-            padding=10,
-        )
-
         self.page.add(
             toolbar,
             self.status,
             ft.Divider(height=8),
-            data_and_output,
-            ft.Divider(height=8),
-            code_section,
+            main_content,          # this now takes all remaining height
         )
 
     async def pick_file(self, e):
