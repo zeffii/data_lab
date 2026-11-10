@@ -8,44 +8,68 @@ from datetime import datetime
 from pathlib import Path
 import difflib
 
+# Syntax highlighting
+try:
+    import flet_code_editor as fce
+    HAS_CODE_EDITOR = True
+except ImportError:
+    HAS_CODE_EDITOR = False
+    print("Tip: install syntax highlighting with →  pip install flet-code-editor")
+
 class DataWorkbench:
     def __init__(self, page: ft.Page):
         self.page = page
         self.page.title = "CSV / JSON Data Workbench + Python Interpreter"
         self.page.theme_mode = ft.ThemeMode.DARK
-        self.page.padding = 20
+        self.page.padding = 15
 
         self.original_df: pd.DataFrame | None = None
         self.df: pd.DataFrame | None = None
         self.current_file: str | None = None
+        self.code_font_size = 14
 
-        # FilePicker is now a Service (do NOT add to overlay)
+        # FilePicker is a Service
         self.file_picker = ft.FilePicker()
         self.page.services.append(self.file_picker)
 
-        # UI elements
-        self.status = ft.Text("No file loaded", color=ft.Colors.GREY_400)
+        # Status bar
+        self.status = ft.Text("No file loaded", color=ft.Colors.GREY_400, size=13)
+
+        # Data table area
         self.table_container = ft.Column(expand=True, scroll=ft.ScrollMode.AUTO)
 
-        self.code_field = ft.TextField(
-            label="Python code (df is the current DataFrame)",
-            multiline=True,
-            min_lines=12,
-            max_lines=20,
-            value=self.get_template_code(),
-            text_style=ft.TextStyle(font_family="Consolas"),
-            expand=True,
-        )
-
+        # Output / Diff console
         self.output = ft.TextField(
             label="Output / Diff",
             multiline=True,
-            min_lines=8,
-            max_lines=15,
+            min_lines=12,
+            max_lines=20,
             read_only=True,
-            text_style=ft.TextStyle(font_family="Consolas"),
+            text_style=ft.TextStyle(font_family="Consolas", size=13),
             expand=True,
         )
+
+        # Font size label
+        self.code_font_label = ft.Text(f"Font: {self.code_font_size}", size=12)
+
+        # Code editor
+        if HAS_CODE_EDITOR:
+            self.code_editor = fce.CodeEditor(
+                value=self.get_template_code(),
+                language=fce.CodeLanguage.PYTHON,
+                code_theme=fce.CodeTheme.ATOM_ONE_DARK,
+                expand=True,
+                text_style=ft.TextStyle(font_family="Consolas", size=self.code_font_size),
+            )
+        else:
+            self.code_editor = ft.TextField(
+                value=self.get_template_code(),
+                multiline=True,
+                min_lines=12,
+                max_lines=18,
+                text_style=ft.TextStyle(font_family="Consolas", size=self.code_font_size),
+                expand=True,
+            )
 
         self.build_ui()
 
@@ -87,46 +111,91 @@ print("Date parsing done. New column 'Date_Parsed' added.")
 print(df[["Filename", "Date_Added", "Source", "Date_Parsed"]].head(10))
 '''
 
+    def change_font_size(self, delta: int):
+        self.code_font_size = max(10, min(28, self.code_font_size + delta))
+        self.code_font_label.value = f"Font: {self.code_font_size}"
+
+        new_style = ft.TextStyle(font_family="Consolas", size=self.code_font_size)
+        if HAS_CODE_EDITOR:
+            self.code_editor.text_style = new_style
+        else:
+            self.code_editor.text_style = new_style
+        self.page.update()
+
     def build_ui(self):
-        self.page.add(
-            ft.Row(
+        # Toolbar
+        toolbar = ft.Row(
+            [
+                ft.Button("Load CSV / JSON", icon=ft.Icons.FOLDER_OPEN, on_click=self.pick_file),
+                ft.Button("Run Code", icon=ft.Icons.PLAY_ARROW, bgcolor=ft.Colors.GREEN_700, on_click=self.run_code),
+                ft.Button("Show Diff", icon=ft.Icons.COMPARE, on_click=self.show_diff),
+                ft.Button("Save Copy", icon=ft.Icons.SAVE, on_click=self.save_copy),
+                ft.Button("Reset", icon=ft.Icons.RESTORE, on_click=self.reset_df),
+                ft.VerticalDivider(),
+                ft.IconButton(ft.Icons.TEXT_DECREASE, tooltip="Smaller font", on_click=lambda e: self.change_font_size(-1)),
+                self.code_font_label,
+                ft.IconButton(ft.Icons.TEXT_INCREASE, tooltip="Larger font", on_click=lambda e: self.change_font_size(+1)),
+            ],
+            spacing=8,
+        )
+
+        # Data table (left) + Output (right)
+        data_and_output = ft.Row(
+            [
+                ft.Container(
+                    content=ft.Column(
+                        [
+                            ft.Text("Data Preview", weight=ft.FontWeight.BOLD),
+                            self.table_container,
+                        ],
+                        expand=True,
+                    ),
+                    expand=3,
+                    border=ft.Border.all(1, ft.Colors.OUTLINE),
+                    border_radius=6,
+                    padding=10,
+                ),
+                ft.Container(
+                    content=ft.Column(
+                        [
+                            ft.Text("Output / Diff", weight=ft.FontWeight.BOLD),
+                            self.output,
+                        ],
+                        expand=True,
+                    ),
+                    expand=2,
+                    border=ft.Border.all(1, ft.Colors.OUTLINE),
+                    border_radius=6,
+                    padding=10,
+                ),
+            ],
+            expand=True,
+            spacing=12,
+            vertical_alignment=ft.CrossAxisAlignment.STRETCH,
+        )
+
+        # Code editor
+        code_section = ft.Container(
+            content=ft.Column(
                 [
-                    ft.Button(
-                        "Load CSV / JSON",
-                        icon=ft.Icons.FOLDER_OPEN,
-                        on_click=self.pick_file,
-                    ),
-                    ft.Button(
-                        "Run Code",
-                        icon=ft.Icons.PLAY_ARROW,
-                        bgcolor=ft.Colors.GREEN_700,
-                        on_click=self.run_code,
-                    ),
-                    ft.Button(
-                        "Show Diff",
-                        icon=ft.Icons.COMPARE,
-                        on_click=self.show_diff,
-                    ),
-                    ft.Button(
-                        "Save Copy",
-                        icon=ft.Icons.SAVE,
-                        on_click=self.save_copy,
-                    ),
-                    ft.Button(
-                        "Reset to Original",
-                        icon=ft.Icons.RESTORE,
-                        on_click=self.reset_df,
-                    ),
-                ]
+                    ft.Text("Python Interpreter", weight=ft.FontWeight.BOLD),
+                    self.code_editor,
+                ],
+                expand=True,
             ),
+            height=300,
+            border=ft.Border.all(1, ft.Colors.OUTLINE),
+            border_radius=6,
+            padding=10,
+        )
+
+        self.page.add(
+            toolbar,
             self.status,
-            ft.Divider(),
-            ft.Text("Data Preview", weight=ft.FontWeight.BOLD),
-            self.table_container,
-            ft.Divider(),
-            ft.Text("Python Interpreter", weight=ft.FontWeight.BOLD),
-            self.code_field,
-            self.output,
+            ft.Divider(height=8),
+            data_and_output,
+            ft.Divider(height=8),
+            code_section,
         )
 
     async def pick_file(self, e):
@@ -147,7 +216,6 @@ print(df[["Filename", "Date_Added", "Source", "Date_Parsed"]].head(10))
                     data = json.load(f)
                 self.df = pd.json_normalize(data) if isinstance(data, list) else pd.DataFrame([data])
             else:
-                # Your sample uses semicolon
                 try:
                     self.df = pd.read_csv(path, sep=";", dtype=str, keep_default_na=False)
                 except Exception:
@@ -175,9 +243,9 @@ print(df[["Filename", "Date_Added", "Source", "Date_Parsed"]].head(10))
         table = ft.DataTable(
             columns=columns,
             rows=rows,
-            border=ft.border.all(1, ft.Colors.OUTLINE),
-            vertical_lines=ft.border.BorderSide(1, ft.Colors.OUTLINE),
-            horizontal_lines=ft.border.BorderSide(1, ft.Colors.OUTLINE),
+            border=ft.Border.all(1, ft.Colors.OUTLINE),
+            vertical_lines=ft.BorderSide(1, ft.Colors.OUTLINE),
+            horizontal_lines=ft.BorderSide(1, ft.Colors.OUTLINE),
             heading_row_color=ft.Colors.SURFACE_CONTAINER_HIGHEST,
         )
         self.table_container.controls = [table]
@@ -188,6 +256,8 @@ print(df[["Filename", "Date_Added", "Source", "Date_Parsed"]].head(10))
             self.output.value = "Load a file first."
             self.page.update()
             return
+
+        code = self.code_editor.value
 
         old_stdout = io.StringIO()
         sys_stdout = sys.stdout
@@ -202,7 +272,7 @@ print(df[["Filename", "Date_Added", "Source", "Date_Parsed"]].head(10))
         }
 
         try:
-            exec(self.code_field.value, {"__builtins__": __builtins__}, local_ns)
+            exec(code, {"__builtins__": __builtins__}, local_ns)
             if "df" in local_ns:
                 self.df = local_ns["df"]
             self.refresh_table()
